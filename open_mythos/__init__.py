@@ -1,3 +1,7 @@
+from open_mythos.agents import (
+    MultiAgentConfig,
+    MultiAgentRecurrentBlock,
+)
 from open_mythos.main import (
     ACTHalting,
     Expert,
@@ -15,8 +19,20 @@ from open_mythos.main import (
     loop_index_embedding,
     precompute_rope_freqs,
 )
+from open_mythos.meow import (
+    BusGate,
+    MeowAuditor,
+    MeowBus,
+    MeowTrace,
+    VectorQuantizer,
+    snapshot_codebook_stats,
+)
+from open_mythos.multi_agent_model import MultiAgentMythos
 from open_mythos.tokenizer import MythosTokenizer
 from open_mythos.variants import (
+    multi_agent_1b,
+    multi_agent_3b,
+    multi_agent_10b,
     mythos_1b,
     mythos_1t,
     mythos_3b,
@@ -27,6 +43,7 @@ from open_mythos.variants import (
 )
 
 __all__ = [
+    # Single-agent core
     "MythosConfig",
     "RMSNorm",
     "GQAttention",
@@ -42,6 +59,7 @@ __all__ = [
     "precompute_rope_freqs",
     "apply_rope",
     "loop_index_embedding",
+    # Variants
     "mythos_1b",
     "mythos_3b",
     "mythos_10b",
@@ -49,7 +67,20 @@ __all__ = [
     "mythos_100b",
     "mythos_500b",
     "mythos_1t",
-    "load_tokenizer",
-    "get_vocab_size",
+    # Multi-agent
+    "MultiAgentConfig",
+    "MultiAgentRecurrentBlock",
+    "MultiAgentMythos",
+    "multi_agent_1b",
+    "multi_agent_3b",
+    "multi_agent_10b",
+    # Meow protocol
+    "VectorQuantizer",
+    "MeowBus",
+    "BusGate",
+    "MeowTrace",
+    "MeowAuditor",
+    "snapshot_codebook_stats",
+    # Tokenizer
     "MythosTokenizer",
 ]

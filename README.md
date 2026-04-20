@@ -161,11 +161,80 @@ Key design choices:
 
 ---
 
+## Native Multi-Agent (Meow Protocol)
+
+OpenMythos ships with a **native multi-agent** extension: N cooperating
+reasoning agents running inside **one forward pass of one set of weights**,
+exchanging **discrete codebook messages** every recurrent loop step. The
+multi-agent property is a property of the forward pass itself — no external
+orchestrator, no decoded text between agents, no per-agent model.
+
+`open_mythos/main.py` is **unchanged**. The multi-agent path is additive:
+`MultiAgentMythos` subclasses `OpenMythos` and swaps in a
+`MultiAgentRecurrentBlock`. Pick one or the other at construction; everything
+downstream (tokenizer, LM head tying, RoPE, MLA caching) is identical.
+
+```python
+from open_mythos import MultiAgentMythos, multi_agent_3b
+
+cfg = multi_agent_3b()                   # 4 agents, codebook K=512, msg_len=4
+model = MultiAgentMythos(cfg)
+
+# Inference — behaves like a normal LM
+logits = model(input_ids)
+
+# Training — add VQ auxiliary loss
+logits, info = model(input_ids, return_info=True)
+loss = cross_entropy(logits.view(-1, V), targets.view(-1)) \
+     + cfg.vq_loss_weight * info["vq_loss"]
+
+# Inspect inter-agent traffic
+model.eval()
+logits, trace = model.trace_forward(input_ids)
+print(trace.summary())                   # codebook perplexity + usage rate
+
+# Ablate peer communication with one scalar
+model.recurrent.bus_gate.set_gate(0.0)   # N independent single agents
+model.recurrent.bus_gate.set_gate(1.0)   # full peer integration
+```
+
+**Variants:**
+
+| Factory | `n_agents` | Codebook | Use |
+|---|---|---|---|
+| `multi_agent_1b()` | 4 | K=512, cdim=128, msg_len=4 | Research / protocol fine-tuning |
+| `multi_agent_3b()` | 4 | K=512, cdim=128, msg_len=4 | Mid-scale training |
+| `multi_agent_10b()` | 8 | K=1024, cdim=128, msg_len=4 | Production-target |
+
+**Why it beats a harness-style setup:** one model forward instead of N
+network hops, `msg_len · log2(K)` bits per inter-agent message instead of
+tokens of natural language, every message is a discrete index auditable
+after the fact, and the LTI stability guarantee `ρ(A) < 1` is preserved
+exactly — the mean-aggregated peer drive is bounded independent of `N`,
+so no projection or gradient penalty is needed.
+
+FSDP pretraining scaffold is at
+[`training/multi_agent_pretrain.py`](training/multi_agent_pretrain.py)
+(manual launch; not auto-triggered). It adds a BusGate warmup curriculum
+(step 0 ≡ N independent single agents) and three invariant kill-switches
+(NaN loss, ρ(A), codebook collapse) that abort with a labeled checkpoint
+rather than clamp and continue.
+
+See [`docs/multi_agent.md`](docs/multi_agent.md) for the full architecture
+doc (ASCII diagram, stability proof, interpretability APIs, test list) and
+[`docs/multi_agent_decisions.md`](docs/multi_agent_decisions.md) for the
+architectural decision record — **read before changing load-bearing
+choices** like the mean-not-sum aggregation rule.
+
+---
+
 ## Documentation
 
 | Page | Description |
 |---|---|
 | [`docs/open_mythos.md`](docs/open_mythos.md) | Full API reference for the `OpenMythos` class — constructor, `forward`, `generate`, all sub-modules, configuration reference, and usage examples |
+| [`docs/multi_agent.md`](docs/multi_agent.md) | Native multi-agent architecture: N cooperating agents in one forward pass, Meow discrete protocol, stability proof |
+| [`docs/multi_agent_decisions.md`](docs/multi_agent_decisions.md) | Architectural decision record for the multi-agent extension — 12 ADRs with load-bearing / reversal-cost labels |
 | [`docs/datasets.md`](docs/datasets.md) | Recommended training datasets with token budget guidance per model size |
 
 ---

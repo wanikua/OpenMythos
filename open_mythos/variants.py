@@ -1,9 +1,16 @@
+from open_mythos.agents import MultiAgentConfig
 from open_mythos.main import MythosConfig
 
 # Parameter budget breakdown per variant:
 #   total ≈ embed + prelude/coda dense blocks + recurrent MLA + MoE
 #   MoE   = 3 * dim * expert_dim * (n_experts + n_shared * n_experts_per_tok)
 # expert_dim is solved from the residual budget after all other terms.
+#
+# Multi-agent variants add a Meow bus and per-agent LoRA, contributing roughly:
+#   bus    = 2 * dim * (msg_len * codebook_dim) + codebook_size * codebook_dim
+#   lora   = dim * rank + rank * dim + (max_loops * n_agents) * rank
+# Both are small relative to MoE, so multi-agent configs reuse single-agent
+# `expert_dim` sizing; the total parameter budget changes by < 2%.
 
 
 def mythos_1b() -> MythosConfig:
@@ -195,4 +202,129 @@ def mythos_1t() -> MythosConfig:
         rope_theta=2000000.0,
         lora_rank=256,
         max_output_tokens=131072,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent variants (native multi-agent, Meow discrete broadcast bus)
+# ---------------------------------------------------------------------------
+
+
+def multi_agent_1b() -> MultiAgentConfig:
+    """
+    1B multi-agent config. 4 agents, dim=2048, 64 experts, 16 loop iters.
+
+    Meow bus: 512 symbols × 128-dim codebook, msg_len=4 picks per position per agent per loop.
+    Per-loop-step message budget: 4 agents × T tokens × 4 picks × log2(512) = 144 bits per token per loop step.
+    Intended for research / fine-tuning of the multi-agent protocol; parameter
+    count is nearly identical to `mythos_1b()`.
+    """
+    return MultiAgentConfig(
+        vocab_size=32000,
+        dim=2048,
+        n_heads=16,
+        n_kv_heads=4,
+        max_seq_len=4096,
+        max_loop_iters=16,
+        prelude_layers=2,
+        coda_layers=2,
+        attn_type="mla",
+        kv_lora_rank=256,
+        q_lora_rank=512,
+        qk_rope_head_dim=32,
+        qk_nope_head_dim=64,
+        v_head_dim=64,
+        n_experts=64,
+        n_shared_experts=2,
+        n_experts_per_tok=4,
+        expert_dim=2048,
+        act_threshold=0.99,
+        rope_theta=500000.0,
+        lora_rank=8,
+        n_agents=4,
+        meow_codebook_size=512,
+        meow_codebook_dim=128,
+        meow_msg_len=4,
+        meow_commitment_cost=0.25,
+        meow_ema_decay=0.99,
+        vq_loss_weight=0.1,
+    )
+
+
+def multi_agent_3b() -> MultiAgentConfig:
+    """
+    3B multi-agent config. 4 agents, dim=3072, 64 experts, 16 loop iters.
+
+    Mid-scale variant for the multi-agent protocol. Same experts + loop budget
+    as `mythos_3b()`; additional overhead from bus + per-agent LoRA is under 2%.
+    """
+    return MultiAgentConfig(
+        vocab_size=32000,
+        dim=3072,
+        n_heads=24,
+        n_kv_heads=6,
+        max_seq_len=4096,
+        max_loop_iters=16,
+        prelude_layers=2,
+        coda_layers=2,
+        attn_type="mla",
+        kv_lora_rank=384,
+        q_lora_rank=768,
+        qk_rope_head_dim=32,
+        qk_nope_head_dim=96,
+        v_head_dim=96,
+        n_experts=64,
+        n_shared_experts=2,
+        n_experts_per_tok=4,
+        expert_dim=4096,
+        act_threshold=0.99,
+        rope_theta=500000.0,
+        lora_rank=8,
+        n_agents=4,
+        meow_codebook_size=512,
+        meow_codebook_dim=128,
+        meow_msg_len=4,
+        meow_commitment_cost=0.25,
+        meow_ema_decay=0.99,
+        vq_loss_weight=0.1,
+    )
+
+
+def multi_agent_10b() -> MultiAgentConfig:
+    """
+    10B multi-agent config. 8 agents, dim=4096, 128 experts, 24 loop iters, 8k context.
+
+    Production-target scale. 8 agents give a richer internal ensemble at the
+    cost of 8× bus compute per loop step; worth it only above 10B where MoE
+    dominates the FLOPs budget and the bus overhead stays negligible.
+    """
+    return MultiAgentConfig(
+        vocab_size=32000,
+        dim=4096,
+        n_heads=32,
+        n_kv_heads=8,
+        max_seq_len=8192,
+        max_loop_iters=24,
+        prelude_layers=2,
+        coda_layers=2,
+        attn_type="mla",
+        kv_lora_rank=512,
+        q_lora_rank=1024,
+        qk_rope_head_dim=64,
+        qk_nope_head_dim=128,
+        v_head_dim=128,
+        n_experts=128,
+        n_shared_experts=2,
+        n_experts_per_tok=4,
+        expert_dim=5632,
+        act_threshold=0.99,
+        rope_theta=500000.0,
+        lora_rank=16,
+        n_agents=8,
+        meow_codebook_size=1024,
+        meow_codebook_dim=128,
+        meow_msg_len=4,
+        meow_commitment_cost=0.25,
+        meow_ema_decay=0.99,
+        vq_loss_weight=0.1,
     )
