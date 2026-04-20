@@ -114,7 +114,7 @@ from open_mythos import (
     OpenMythos,
 )
 
-cfg = mythos_7b()  # returns a MythosConfig
+cfg = mythos_3b()  # returns a MythosConfig
 model = OpenMythos(cfg)
 
 total = sum(p.numel() for p in model.parameters())
@@ -151,23 +151,29 @@ Key design choices:
 
 | Feature | Detail |
 |---|---|
-| Optimizer | Muon for 2D weight matrices, AdamW for embeddings/norms |
+| Optimizer | AdamW (Muon was planned but not implemented — see `training/3b_fine_web_edu.py:194`) |
 | Dataset | `HuggingFaceFW/fineweb-edu` (`sample-10BT` by default, swap to `sample-100BT` or `default` for full run) |
 | Tokenizer | `openai/gpt-oss-20b` via `MythosTokenizer` |
-| Parallelism | PyTorch DDP via `torchrun`, sharded streaming dataset |
-| Precision | bfloat16 on H100/A100, float16 + GradScaler on older GPUs |
+| Parallelism | FSDP via `torchrun`, sharded streaming dataset |
+| Precision | bfloat16 on H100/A100, float16 via `torch.amp.autocast` on older GPUs (no `GradScaler`) |
 | Schedule | Linear warmup (2000 steps) → cosine decay |
-| Target | 30B tokens (~Chinchilla-adjusted for looped architecture) |
+| Target | 30B tokens (Chinchilla-style budget; no trained checkpoint released) |
 
 ---
 
 ## Native Multi-Agent (Meow Protocol)
 
-OpenMythos ships with a **native multi-agent** extension: N cooperating
-reasoning agents running inside **one forward pass of one set of weights**,
-exchanging **discrete codebook messages** every recurrent loop step. The
-multi-agent property is a property of the forward pass itself — no external
-orchestrator, no decoded text between agents, no per-agent model.
+> **Status: architecture + tests only.** No pretrained checkpoint exists.
+> Claims below are architectural — they have not been compared against a
+> harness-based baseline on any task. The stability proof for `ρ(A) < 1`
+> under multi-agent broadcast is verified by `tests/test_multi_agent.py`
+> and the math holds for any training step; end-to-end quality vs. a
+> harness is an open question.
+
+An **experimental** multi-agent extension: N agents running inside one
+forward pass of one set of weights, exchanging **discrete codebook
+messages** every recurrent loop step via a vendored VQ-VAE codebook
+(`wanikua/meow`, MIT).
 
 `open_mythos/main.py` is **unchanged**. The multi-agent path is additive:
 `MultiAgentMythos` subclasses `OpenMythos` and swaps in a
@@ -198,33 +204,46 @@ model.recurrent.bus_gate.set_gate(0.0)   # N independent single agents
 model.recurrent.bus_gate.set_gate(1.0)   # full peer integration
 ```
 
-**Variants:**
+**Variants** (parameter counts are theoretical; no checkpoints trained):
 
-| Factory | `n_agents` | Codebook | Use |
-|---|---|---|---|
-| `multi_agent_1b()` | 4 | K=512, cdim=128, msg_len=4 | Research / protocol fine-tuning |
-| `multi_agent_3b()` | 4 | K=512, cdim=128, msg_len=4 | Mid-scale training |
-| `multi_agent_10b()` | 8 | K=1024, cdim=128, msg_len=4 | Production-target |
+| Factory | `n_agents` | Codebook |
+|---|---|---|
+| `multi_agent_1b()` | 4 | K=512, cdim=128, msg_len=4 |
+| `multi_agent_3b()` | 4 | K=512, cdim=128, msg_len=4 |
+| `multi_agent_10b()` | 8 | K=1024, cdim=128, msg_len=4 |
 
-**Why it beats a harness-style setup:** one model forward instead of N
-network hops, `msg_len · log2(K)` bits per inter-agent message instead of
-tokens of natural language, every message is a discrete index auditable
-after the fact, and the LTI stability guarantee `ρ(A) < 1` is preserved
-exactly — the mean-aggregated peer drive is bounded independent of `N`,
-so no projection or gradient penalty is needed.
+**Architectural differences from a harness-style setup** (not a benchmark
+claim — no head-to-head comparison has been run):
 
-FSDP pretraining scaffold is at
+- One model forward per multi-agent step instead of N inference calls.
+- `msg_len · log2(K)` bits per inter-agent message instead of tokens of
+  natural language. For the 3B defaults that is 36 bits per token-position
+  per loop step per agent.
+- Every message is a discrete index, so the inter-agent traffic is
+  inspectable post-hoc via `MeowTrace` without logging raw activations.
+- LTI stability `ρ(A) < 1` is preserved by construction: mean-aggregated
+  peer drive is bounded independent of N, codebook entries have bounded
+  norm, `BusGate` is scalar. Verified by unit tests at init and after a
+  backward step; not verified across a long training run.
+
+Whether these architectural properties translate into better end-to-end
+quality on real tasks is **unknown** — it requires pretraining and a
+head-to-head evaluation against a harness wrapping an equivalent base
+model. Neither has been done.
+
+The FSDP pretraining scaffold at
 [`training/multi_agent_pretrain.py`](training/multi_agent_pretrain.py)
-(manual launch; not auto-triggered). It adds a BusGate warmup curriculum
-(step 0 ≡ N independent single agents) and three invariant kill-switches
-(NaN loss, ρ(A), codebook collapse) that abort with a labeled checkpoint
-rather than clamp and continue.
+(manual launch; not auto-triggered) adds a BusGate warmup curriculum
+(step 0 is bit-exact equivalent to N independent single-agent runs) and
+three invariant kill-switches (NaN loss, ρ(A), codebook collapse) that
+abort with a labeled checkpoint rather than clamp and continue.
 
-See [`docs/multi_agent.md`](docs/multi_agent.md) for the full architecture
-doc (ASCII diagram, stability proof, interpretability APIs, test list) and
+See [`docs/multi_agent.md`](docs/multi_agent.md) for the architecture doc
+(ASCII diagram, stability proof, interpretability APIs, test list) and
 [`docs/multi_agent_decisions.md`](docs/multi_agent_decisions.md) for the
-architectural decision record — **read before changing load-bearing
-choices** like the mean-not-sum aggregation rule.
+architectural decision record — 12 ADRs labeled with load-bearing and
+reversal-cost flags, including which defaults are `provisional` (e.g.,
+`vq_loss_weight=0.1`, `bus_warmup_steps=5000`).
 
 ---
 

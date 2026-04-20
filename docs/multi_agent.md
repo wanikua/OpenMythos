@@ -3,21 +3,30 @@
 **Module:** `open_mythos.multi_agent_model`, `open_mythos.agents`, `open_mythos.meow`
 **Top class:** `MultiAgentMythos(OpenMythos)`
 
+> **Status: architecture + unit tests only.** No pretrained checkpoint
+> exists. The stability invariant `ρ(A) < 1` is mathematically guaranteed
+> by construction and covered by tests; every other claim about
+> "emergent shared protocol," "better reasoning," or "beating a harness"
+> is an **untested hypothesis** until pretraining runs and a head-to-head
+> evaluation happen. This doc describes what the code *does*, not what
+> the model is known to *achieve*.
+
 ---
 
 ## TL;DR
 
-OpenMythos can run N cooperating reasoning agents *inside a single forward
-pass of a single set of weights*. The agents share the recurrent body,
-specialize via per-agent LoRA deltas, and exchange **discrete codebook
-messages** every recurrent loop step via the **Meow protocol**. The whole
-system is one `nn.Module`, one optimizer, one backward pass. No external
-orchestrator, no decoded text between agents, no per-agent KV cache over
-the network.
+N agents run inside a single forward pass of a single set of weights.
+They share the recurrent body, specialize via per-agent LoRA deltas, and
+exchange **discrete codebook messages** every recurrent loop step via a
+vendored VQ-VAE codebook (the "Meow protocol" — `wanikua/meow`, MIT).
+The whole system is one `nn.Module`, one optimizer, one backward pass.
+No external orchestrator, no decoded text between agents, no per-agent
+KV cache over the network.
 
-This is what we mean by **native** multi-agent: the multi-agent property
-is a property of the forward pass itself, not of a harness that sits on
-top of one or more models.
+"Native" here means the multi-agent property is a property of the
+forward pass itself, not of a harness that sits on top of one or more
+models. Whether this translates into measurable downstream quality is
+an open question — see the caveat above.
 
 ---
 
@@ -135,29 +144,36 @@ not a stability constraint.
 
 ---
 
-## Why this beats a Claude-Code-style harness
+## Architectural differences from a harness-style setup
 
-A harness orchestrates multiple independent LLM calls over text:
-each agent runs a decoder, tokenizer, and prompt pack; each hop pays a
-full inference cost; "shared state" is whatever fits in a prompt;
-the only artifact you can inspect is the final tool call or text reply.
+**No benchmark comparison has been run.** This section catalogs
+architectural differences, not measured outcomes. Whether any of these
+differences matter in practice depends on trained behavior that doesn't
+yet exist.
 
-| Axis | Harness (Claude Code style) | Native (OpenMythos multi-agent) |
+A harness orchestrates multiple independent LLM calls over text: each
+agent runs a decoder, tokenizer, and prompt pack; each hop pays a full
+inference cost; shared state is whatever fits in a prompt; the only
+artifact you can inspect is the final tool call or text reply.
+
+| Axis | Harness | Native (OpenMythos multi-agent) |
 |---|---|---|
 | Inter-agent latency | One full decode per hop | One linear layer + argmin per hop |
 | Message bandwidth | Tokens of natural language | `msg_len · log2(K)` bits per token-position per loop step |
 | Shared state | Prompt window per agent | Shared hidden state every step via bus |
 | Training signal | Only on the final LM head output | Task loss + VQ loss jointly optimize bus usage |
-| Auditability | Only final text / tool calls | Every message is a discrete index — full trace via `MeowTrace` / `MeowAuditor.gloss` |
+| Auditability | Final text / tool calls | Every message is a discrete index — full trace via `MeowTrace` / `MeowAuditor.gloss` |
 | Compute model | N × model inference per turn | 1 × model forward, N agents inside it |
 | Memory model | N × KV cache over network | N × KV cache colocated with weights (FSDP-shardable) |
 | Determinism | Depends on each agent's sampler | Deterministic in eval mode (locked down by `test_eval_mode_forward_is_deterministic`) |
 
-The claim is not that harnesses are useless — they are the right answer
-when you need tool use and adaptation over long horizons. The claim is
-that when what you want is **N cooperating reasoners producing one
-answer**, native multi-agent is architecturally cheaper and strictly
-more auditable.
+Harnesses are not wrong — they are the common answer when you need tool
+use and adaptation over long horizons, and they let you compose models
+you don't control. The **hypothesis** of the native approach is that
+when the task is "N cooperating reasoners producing one answer," moving
+coordination inside the forward pass reduces latency and produces a
+trace you can actually inspect. Validating that hypothesis requires a
+trained model and a paired harness baseline — neither exists yet.
 
 ---
 
@@ -250,13 +266,15 @@ out_full_comms = model(input_ids)
 
 ## Variants
 
-Defined in `open_mythos.variants`:
+Defined in `open_mythos.variants`. Parameter counts below are
+`sum(p.numel() for p in model.parameters())` at the declared `dim` /
+`n_experts` / `max_loop_iters` — no checkpoint has been trained.
 
-| Factory | `n_agents` | Codebook | Intended use |
+| Factory | `n_agents` | Codebook | Notes |
 |---|---|---|---|
-| `multi_agent_1b()` | 4 | K=512, cdim=128, msg_len=4 | Research / fine-tuning the protocol |
-| `multi_agent_3b()` | 4 | K=512, cdim=128, msg_len=4 | Mid-scale training |
-| `multi_agent_10b()` | 8 | K=1024, cdim=128, msg_len=4 | Production-target: 8 agents worth it only where MoE FLOPs dominate |
+| `multi_agent_1b()` | 4 | K=512, cdim=128, msg_len=4 | Smallest variant — usable for protocol smoke tests |
+| `multi_agent_3b()` | 4 | K=512, cdim=128, msg_len=4 | Matches single-agent `mythos_3b()` scale |
+| `multi_agent_10b()` | 8 | K=1024, cdim=128, msg_len=4 | Not validated that 8 agents help vs 4 |
 
 Parameter overhead of multi-agent over single-agent (at the same `dim`,
 `max_loop_iters`, `n_experts`) is under 2% — the bus adds
