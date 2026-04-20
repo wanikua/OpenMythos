@@ -344,6 +344,7 @@ pytest tests/test_multi_agent.py -q
 | `tests/test_multi_agent.py` | Invariant tests |
 | `docs/multi_agent.md` | This document |
 | `docs/multi_agent_decisions.md` | Architectural decision record — **read before changing load-bearing choices** |
+| `docs/plan_bus_helpfulness.md` | Proposed CPU-scale experiment to test whether the Meow bus produces a detectable training-loss gain |
 
 Crucially, `open_mythos/main.py` is **unchanged**. The multi-agent
 architecture is purely additive: pick `MultiAgentMythos` instead of
